@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MBO Order Book Ladder — FIFO Queue</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0d1117;
+            color: #e6edf3;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            padding: 24px 16px;
+        }
+        h1 { font-size: 22px; font-weight: 600; color: #f0f6fc; margin-bottom: 4px; }
+        .page-sub { font-size: 13px; color: #8b949e; margin-bottom: 20px; }
+        #event-bar {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            padding: 14px 22px;
+            margin-bottom: 14px;
+            width: 100%;
+            max-width: 960px;
+            min-height: 56px;
+        }
+        #event-title { font-size: 17px; font-weight: 600; color: #f0f6fc; margin-bottom: 3px; }
+        #event-desc { font-size: 13px; color: #8b949e; line-height: 1.5; }
+        #svg-container {
+            width: 100%;
+            max-width: 960px;
+            border-radius: 10px;
+            border: 1px solid #30363d;
+            overflow: hidden;
+            transition: opacity 0.25s ease;
+        }
+        #svg-container svg { display: block; width: 100%; height: auto; }
+        #controls {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-top: 18px;
+        }
+        button {
+            background: #21262d;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+            padding: 8px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        button:hover:not(:disabled) { background: #30363d; border-color: #8b949e; }
+        button:disabled { opacity: 0.35; cursor: default; }
+        #counter { font-size: 13px; color: #8b949e; min-width: 60px; text-align: center; }
+        #dots { display: flex; gap: 7px; margin-top: 14px; }
+        .dot {
+            width: 9px; height: 9px; border-radius: 50%;
+            background: #21262d; border: 1px solid #30363d;
+            cursor: pointer; transition: all 0.2s;
+        }
+        .dot.active { background: #58a6ff; border-color: #58a6ff; }
+        .dot:hover:not(.active) { background: #30363d; }
+        #legend {
+            display: flex; gap: 20px; margin-top: 18px;
+            flex-wrap: wrap; justify-content: center;
+        }
+        .leg { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #8b949e; }
+        .lsw { width: 14px; height: 14px; border-radius: 3px; }
+        #dataset-panel {
+            display: none;
+            width: 100%;
+            max-width: 1200px;
+            margin-top: 0;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            padding: 16px 12px 20px;
+        }
+        #dataset-panel h2 { font-size: 18px; font-weight: 600; color: #f0f6fc; margin-bottom: 4px; }
+        #dataset-panel p.note { font-size: 14px; color: #8b949e; margin-bottom: 12px; line-height: 1.45; }
+        .table-scroll { width: 100%; overflow-x: auto; border-radius: 6px; border: 1px solid #21262d; }
+        .mbo-tape { width: 100%; border-collapse: collapse; font-size: 14px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+        .mbo-tape th {
+            text-align: left; padding: 10px 12px; color: #8b949e; font-weight: 600;
+            background: #0d1117; border-bottom: 1px solid #30363d; white-space: nowrap;
+            position: sticky; top: 0; z-index: 1;
+        }
+        .mbo-tape td { padding: 8px 12px; color: #c9d1d9; border-bottom: 1px solid #21262d; white-space: nowrap; }
+        .mbo-tape tr:last-child td { border-bottom: none; }
+        .mbo-tape tbody tr:hover { background: #1c2128; }
+        .mbo-tape .num { text-align: right; color: #e6edf3; }
+        .mbo-tape .tob { color: #79c0ff; }
+        .mbo-tape .side-b { color: #3fb950; }
+        .mbo-tape .side-s { color: #f85149; }
+        #concept-panel {
+            display: none;
+            width: 100%;
+            max-width: 960px;
+            min-height: 440px;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            padding: 40px 48px;
+        }
+        #concept-panel h2 { font-size: 28px; font-weight: 600; color: #f0f6fc; margin-bottom: 36px; }
+        #concept-panel h3 { font-size: 24px; font-weight: 600; color: #58a6ff; margin: -20px 0 28px; }
+        .concept-point {
+            font-size: 22px; font-weight: 600; color: #e6edf3;
+            padding: 14px 0 14px 20px; margin-bottom: 20px;
+            border-left: 3px solid #58a6ff;
+            opacity: 0; transform: translateY(8px);
+            transition: opacity 0.3s ease, transform 0.3s ease;
+        }
+        .concept-point.shown { opacity: 1; transform: none; }
+    </style>
+</head>
+<body>
+    <h1>FIFO Order Book — Market by Order View</h1>
+    <p class="page-sub">Individual orders shown in queue priority. Front of queue fills first.</p>
+    <div id="event-bar"><div id="event-title"></div><div id="event-desc"></div></div>
+    <div id="svg-container"></div>
+    <div id="concept-panel">
+        <h2 id="concept-title"></h2>
+        <h3 id="concept-heading"></h3>
+        <div id="concept-points"></div>
+    </div>
+    <div id="dataset-panel" aria-label="MBO event tape and top-of book">
+        <h2>Event tape</h2>
+        <p class="note"><code>bp0</code> / <code>ap0</code> = best bid / ask; <code>bq0</code> / <code>aq0</code> = displayed size at those prices. Trade <code>px</code> = deepest print in that execution.</p>
+        <div class="table-scroll">
+            <table class="mbo-tape" id="mbo-tape">
+                <thead>
+                    <tr>
+                        <th>seq</th>
+                        <th>evt</th>
+                        <th>id</th>
+                        <th>side</th>
+                        <th>px</th>
+                        <th>sz</th>
+                        <th class="num tob">bp0</th>
+                        <th class="num tob">ap0</th>
+                        <th class="num tob">bq0</th>
+                        <th class="num tob">aq0</th>
+                    </tr>
+                </thead>
+                <tbody id="mbo-tape-body"></tbody>
+            </table>
+        </div>
+    </div>
+    <div id="controls">
+        <button id="btnPrev" onclick="go(-1)">&larr; Prev</button>
+        <span id="counter"></span>
+        <button id="btnNext" onclick="go(1)">Next &rarr;</button>
+    </div>
+    <div id="dots"></div>
+    <div id="legend">
+        <div class="leg"><div class="lsw" style="background:#0f4d2e;border:1.5px solid #3fb950"></div>Bid</div>
+        <div class="leg"><div class="lsw" style="background:#4d1a29;border:1.5px solid #da3633"></div>Ask</div>
+        <div class="leg"><div class="lsw" style="background:#5c4a00;border:2px solid #ffc107"></div>Fill Target</div>
+        <div class="leg"><div class="lsw" style="background:#4d3200;border:2px solid #e08c00"></div>Partial Fill</div>
+        <div class="leg"><div class="lsw" style="background:#3d1010;border:2px solid #e74c3c"></div>Cancel</div>
+        <div class="leg"><div class="lsw" style="background:#152d50;border:2px solid #58a6ff"></div>Front of Queue</div>
+    </div>
+
+<script>
+const P = ["101.00","100.75","100.50","100.25","100.00","99.75"];
+const o = (id, qty) => ({id, qty});
+const lv = (price, orders) => ({price, orders});
+
+const slides = [
+    {
+        title: "Initial Order Book",
+        subtitle: "Each box is an individual order in the FIFO queue. Orders closest to the spread fill first when a trade arrives.",
+        asks: [
+            lv("101.00", [o("A5",20)]),
+            lv("100.75", [o("A3",8), o("A4",12)]),
+            lv("100.50", [o("A1",10), o("A2",15)]),
+        ],
+        bids: [
+            lv("100.25", [o("B1",5), o("B2",8), o("B3",12)]),
+            lv("100.00", [o("B4",15), o("B5",10)]),
+            lv("99.75",  [o("B6",25)]),
+        ],
+        highlights: {},
+    },
+    {
+        title: "Cancel: Order B2 at 100.25",
+        subtitle: "B2 (8 lots) cancelled from the middle of the queue. B1 remains front of queue — its priority is unaffected.",
+        asks: [
+            lv("101.00", [o("A5",20)]),
+            lv("100.75", [o("A3",8), o("A4",12)]),
+            lv("100.50", [o("A1",10), o("A2",15)]),
+        ],
+        bids: [
+            lv("100.25", [o("B1",5), o("B2",8), o("B3",12)]),
+            lv("100.00", [o("B4",15), o("B5",10)]),
+            lv("99.75",  [o("B6",25)]),
+        ],
+        highlights: { B2: "cancel", B1: "front" },
+    },
+    {
+        title: "After Cancel: B2 Removed",
+        subtitle: "B2 removed from queue. B1 still front, B3 moves to 2nd position. Level qty: 25 → 17.",
+        asks: [
+            lv("101.00", [o("A5",20)]),
+            lv("100.75", [o("A3",8), o("A4",12)]),
+            lv("100.50", [o("A1",10), o("A2",15)]),
+        ],
+        bids: [
+            lv("100.25", [o("B1",5), o("B3",12)]),
+            lv("100.00", [o("B4",15), o("B5",10)]),
+            lv("99.75",  [o("B6",25)]),
+        ],
+        highlights: { B1: "front" },
+    },
+    {
+        title: "Incoming Sell Market Order: 14 lots",
+        subtitle: "Aggressive sell matches best bid 100.25. FIFO: B1 (5 lots) fills completely, then B3 fills 9 of 12 (partial).",
+        asks: [
+            lv("101.00", [o("A5",20)]),
+            lv("100.75", [o("A3",8), o("A4",12)]),
+            lv("100.50", [o("A1",10), o("A2",15)]),
+        ],
+        bids: [
+            lv("100.25", [o("B1",5), o("B3",12)]),
+            lv("100.00", [o("B4",15), o("B5",10)]),
+            lv("99.75",  [o("B6",25)]),
+        ],
+        highlights: { B1: "fill", B3: "partial" },
+        incoming: { side: "sell", qty: 14 },
+    },
+    {
+        title: "After Trade: Sell 14 @ 100.25",
+        subtitle: "B1 fully filled (5). B3 partially filled (12→3). Queue priority preserved — B3 stays at this level with remaining qty.",
+        asks: [
+            lv("101.00", [o("A5",20)]),
+            lv("100.75", [o("A3",8), o("A4",12)]),
+            lv("100.50", [o("A1",10), o("A2",15)]),
+        ],
+        bids: [
+            lv("100.25", [o("B3",3)]),
+            lv("100.00", [o("B4",15), o("B5",10)]),
+            lv("99.75",  [o("B6",25)]),
+        ],
+        highlights: { B3: "partial-done" },
+        trade: { qty: 14, price: "100.25" },
+    },
+    {
+        title: "New Order: A6 (3 lots) Added at 100.50",
+        subtitle: "A6 joins the back of the queue at 100.50. FIFO: A1 is still #1, A2 is #2, A6 is #3 — last in, last to fill.",
+        asks: [
+            lv("101.00", [o("A5",20)]),
+            lv("100.75", [o("A3",8), o("A4",12)]),
+            lv("100.50", [o("A1",10), o("A2",15), o("A6",3)]),
+        ],
+        bids: [
+            lv("100.25", [o("B3",3)]),
+            lv("100.00", [o("B4",15), o("B5",10)]),
+            lv("99.75",  [o("B6",25)]),
+        ],
+        highlights: { A6: "new", A1: "front" },
+    },
+    {
+        title: "Incoming Buy: 38 lots — Price Level Sweep",
+        subtitle: "Large buy sweeps ask levels. FIFO at each: A1 (10) + A2 (15) + A6 (3) @ 100.50 → A3 (8) + A4 (2 of 12) @ 100.75.",
+        asks: [
+            lv("101.00", [o("A5",20)]),
+            lv("100.75", [o("A3",8), o("A4",12)]),
+            lv("100.50", [o("A1",10), o("A2",15), o("A6",3)]),
+        ],
+        bids: [
+            lv("100.25", [o("B3",3)]),
+            lv("100.00", [o("B4",15), o("B5",10)]),
+            lv("99.75",  [o("B6",25)]),
+        ],
+        highlights: { A1: "fill", A2: "fill", A6: "fill", A3: "fill", A4: "partial" },
+        incoming: { side: "buy", qty: 38, atPrice: "100.75" },
+    },
+    {
+        title: "After Sweep: Spread Widens",
+        subtitle: "100.50 cleared. A3 filled. A4 partially filled (12→10). Best ask moves to 100.75. Spread: 0.25 → 0.50.",
+        asks: [
+            lv("101.00", [o("A5",20)]),
+            lv("100.75", [o("A4",10)]),
+        ],
+        bids: [
+            lv("100.25", [o("B3",3)]),
+            lv("100.00", [o("B4",15), o("B5",10)]),
+            lv("99.75",  [o("B6",25)]),
+        ],
+        highlights: { A4: "partial-done" },
+        trade: { qty: 38, price: "100.50\u2013100.75" },
+        spreadChange: true,
+    },
+    {
+        isDataset: true,
+    },
+    {
+        title: "Why Prices Move",
+        points: ["Fundamentals/News", "Relative Value/Arbitrage", "Supply and Demand"],
+    },
+    {
+        title: "Challenges",
+        heading: "Time",
+        points: ["Minimizing latency", "Modelling latency in data", "Which trades can we get?"],
+    },
+    {
+        title: "Challenges",
+        heading: "Frequency",
+        points: ["High frequency vs low frequency", "Common events vs rare events"],
+    },
+];
+
+/** Tape rows: slide index is book state for TOB. */
+const tapeMeta = [
+    { slide: 2, evt: "CXL", id: "B2", side: "BUY", px: "100.25", sz: 8 },
+    { slide: 4, evt: "TRD", id: "T1", side: "SELL", px: "100.25", sz: 14 },
+    { slide: 4, evt: "DEC", id: "B1", side: "BUY", px: "100.25", sz: 5 },
+    { slide: 4, evt: "DEC", id: "B3", side: "BUY", px: "100.25", sz: 9 },
+    { slide: 5, evt: "ADD", id: "A6", side: "SELL", px: "100.50", sz: 3 },
+    { slide: 7, evt: "TRD", id: "T2", side: "BUY", px: "100.75", sz: 38 },
+    { slide: 7, evt: "DEC", id: "A1", side: "SELL", px: "100.50", sz: 10 },
+    { slide: 7, evt: "DEC", id: "A2", side: "SELL", px: "100.50", sz: 15 },
+    { slide: 7, evt: "DEC", id: "A6", side: "SELL", px: "100.50", sz: 3 },
+    { slide: 7, evt: "DEC", id: "A3", side: "SELL", px: "100.75", sz: 8 },
+    { slide: 7, evt: "DEC", id: "A4", side: "SELL", px: "100.75", sz: 2 },
+];
+
+function getTopOfBook(s) {
+    if (!s || !s.asks) return { bp0: "—", ap0: "—", bq0: "—", aq0: "—" };
+    let bestAsk = null, bestBid = null;
+    for (let i = P.length - 1; i >= 0; i--) {
+        if (s.asks.some(a => a.price === P[i])) { bestAsk = P[i]; break; }
+    }
+    for (let i = 0; i < P.length; i++) {
+        if (s.bids.some(b => b.price === P[i])) { bestBid = P[i]; break; }
+    }
+    const askLv = bestAsk && s.asks.find(a => a.price === bestAsk);
+    const bidLv = bestBid && s.bids.find(b => b.price === bestBid);
+    const bq0 = bidLv ? bidLv.orders.reduce((sum, ord) => sum + ord.qty, 0) : "—";
+    const aq0 = askLv ? askLv.orders.reduce((sum, ord) => sum + ord.qty, 0) : "—";
+    return { bp0: bestBid != null ? bestBid : "—", ap0: bestAsk != null ? bestAsk : "—", bq0, aq0 };
+}
+
+function sideClass(side) {
+    if (side === "BID" || side === "BUY") return "side-b";
+    if (side === "ASK" || side === "SELL") return "side-s";
+    return "";
+}
+
+function fillTape() {
+    const body = document.getElementById("mbo-tape-body");
+    const rows = [];
+    for (let i = 0; i < tapeMeta.length; i++) {
+        const m = tapeMeta[i];
+        const t = getTopOfBook(slides[m.slide]);
+        const sc = sideClass(m.side);
+        const szc = (typeof m.sz === "number") ? "num" : "";
+        rows.push(
+            `<tr><td class="num">${i + 1}</td><td>${m.evt}</td><td>${m.id}</td><td class="${sc}">${m.side}</td>`
+            + `<td>${m.px}</td><td class="${szc}">${m.sz}</td>`
+            + `<td class="num tob">${t.bp0}</td><td class="num tob">${t.ap0}</td><td class="num tob">${t.bq0}</td><td class="num tob">${t.aq0}</td></tr>`,
+        );
+    }
+    body.innerHTML = rows.join("");
+}
+
+// ===== HIGHLIGHT STYLES =====
+const HL = {
+    "fill":         { fill:"#5c4a00", stroke:"#ffc107", sw:2.5, pulse:true },
+    "partial":      { fill:"#4d3200", stroke:"#e08c00", sw:2,   pulse:true },
+    "partial-done": { fill:"#3d2800", stroke:"#b06800", sw:2,   pulse:false },
+    "cancel":       { fill:"#3d1010", stroke:"#e74c3c", sw:2.5, pulse:true },
+    "front":        { fill:"#152d50", stroke:"#58a6ff", sw:2,   pulse:false },
+    "new":          { fill:"#0d3340", stroke:"#22d3ee", sw:2.5, pulse:true },
+};
+const BID_STYLE = { fill:"#0f4d2e", stroke:"#3fb950", sw:1.5 };
+const ASK_STYLE = { fill:"#4d1a29", stroke:"#da3633", sw:1.5 };
+
+// ===== RENDER =====
+function render(s) {
+    const c = document.getElementById("svg-container");
+    const panel = document.getElementById("dataset-panel");
+    const eventBar = document.getElementById("event-bar");
+    const concept = document.getElementById("concept-panel");
+    const legend = document.getElementById("legend");
+    if (s.points) {
+        c.style.display = "none";
+        panel.style.display = "none";
+        eventBar.style.display = "none";
+        legend.style.display = "none";
+        concept.style.display = "block";
+        document.getElementById("concept-title").textContent = s.title;
+        const heading = document.getElementById("concept-heading");
+        heading.textContent = s.heading || "";
+        heading.style.display = s.heading ? "block" : "none";
+        document.getElementById("concept-points").innerHTML =
+            s.points.map(p => `<div class="concept-point">${p}</div>`).join("");
+        showPoints();
+        return;
+    }
+    concept.style.display = "none";
+    legend.style.display = "flex";
+    if (s.isDataset) {
+        c.style.display = "none";
+        panel.style.display = "block";
+        eventBar.style.display = "none";
+        return;
+    }
+    eventBar.style.display = "block";
+    c.style.display = "block";
+    panel.style.display = "none";
+
+    const W = 960, H = 440;
+    const PCX = 415, PCW = 85;
+    const QCW = 44;
+    const BQX = PCX - QCW - 2;
+    const AQX = PCX + PCW + 2;
+    const RH = 55, Y0 = 50, BH = 38, BG = 5;
+    const F = "font-family='-apple-system,BlinkMacSystemFont,sans-serif'";
+    const t = (x,y,anchor,size,fill,weight,text) =>
+        `<text x="${x}" y="${y}" text-anchor="${anchor}" ${F} font-size="${size}" fill="${fill}" font-weight="${weight}">${text}</text>`;
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+    svg += `<rect width="${W}" height="${H}" fill="#0d1117"/>`;
+
+    // Column headers
+    svg += t(BQX-10, 22, "end", 12, "#3fb950", 600, "BID QUEUE");
+    svg += t(BQX+QCW/2, 22, "middle", 11, "#3fb950", 600, "QTY");
+    svg += t(PCX+PCW/2, 22, "middle", 12, "#8b949e", 600, "PRICE");
+    svg += t(AQX+QCW/2, 22, "middle", 11, "#da3633", 600, "QTY");
+    svg += t(AQX+QCW+10, 22, "start", 12, "#da3633", 600, "ASK QUEUE");
+    svg += t(BQX-10, 38, "end", 11, "#7d8590", 500, "\u2190 back \u00b7\u00b7\u00b7 front \u2192");
+    svg += t(AQX+QCW+10, 38, "start", 11, "#7d8590", 500, "\u2190 front \u00b7\u00b7\u00b7 back \u2192");
+
+    // Best bid/ask
+    let bestAsk = null, bestBid = null;
+    for (let i = P.length-1; i >= 0; i--) {
+        if (s.asks.some(a => a.price === P[i])) { bestAsk = P[i]; break; }
+    }
+    for (let i = 0; i < P.length; i++) {
+        if (s.bids.some(b => b.price === P[i])) { bestBid = P[i]; break; }
+    }
+
+    function boxW(qty) { return Math.max(54, Math.min(88, 36 + qty * 2.2)); }
+
+    function drawOrder(ox, oy, order, side, pos) {
+        const bw = boxW(order.qty);
+        const hl = s.highlights[order.id];
+        const st = hl ? HL[hl] : (side === "ask" ? ASK_STYLE : BID_STYLE);
+        const actualX = side === "bid" ? ox - bw : ox;
+
+        svg += `<rect x="${actualX}" y="${oy}" width="${bw}" height="${BH}" rx="5" `
+             + `fill="${st.fill}" stroke="${st.stroke}" stroke-width="${st.sw}"/>`;
+
+        if (st.pulse) {
+            svg += `<rect x="${actualX}" y="${oy}" width="${bw}" height="${BH}" rx="5" `
+                 + `fill="${st.stroke}" opacity="0.12">`
+                 + `<animate attributeName="opacity" values="0.12;0.3;0.12" dur="1.2s" repeatCount="indefinite"/>`
+                 + `</rect>`;
+        }
+
+        // Cancel X
+        if (hl === "cancel") {
+            const m = 10;
+            svg += `<line x1="${actualX+m}" y1="${oy+6}" x2="${actualX+bw-m}" y2="${oy+BH-6}" `
+                 + `stroke="#e74c3c" stroke-width="2.5" stroke-linecap="round" opacity="0.9"/>`;
+            svg += `<line x1="${actualX+bw-m}" y1="${oy+6}" x2="${actualX+m}" y2="${oy+BH-6}" `
+                 + `stroke="#e74c3c" stroke-width="2.5" stroke-linecap="round" opacity="0.9"/>`;
+        }
+
+        svg += t(actualX+bw/2, oy+15, "middle", 11, "#bbb", 600, order.id);
+        svg += t(actualX+bw/2, oy+31, "middle", 14, "#f0f6fc", 700, order.qty);
+
+        // Queue position label
+        svg += t(actualX+bw/2, oy-3, "middle", 10, "#7d8590", 500, "#"+(pos+1));
+
+        return bw;
+    }
+
+    P.forEach((price, i) => {
+        const y = Y0 + i * RH;
+        const isBA = price === bestAsk;
+        const isBB = price === bestBid;
+        const askLv = s.asks.find(a => a.price === price);
+        const bidLv = s.bids.find(b => b.price === price);
+        const has = askLv || bidLv;
+
+        // Row background
+        let rbg = "#0d1117";
+        if (askLv) rbg = "#110d14";
+        if (bidLv) rbg = "#0d1310";
+        svg += `<rect x="4" y="${y}" width="${W-8}" height="${RH-3}" rx="4" fill="${rbg}"/>`;
+
+        // Price cell
+        let pcBg = "#161b22";
+        if (isBA) pcBg = "#201520";
+        if (isBB) pcBg = "#132215";
+        svg += `<rect x="${PCX}" y="${y}" width="${PCW}" height="${RH-3}" rx="4" fill="${pcBg}" stroke="#30363d" stroke-width="0.5"/>`;
+        svg += t(PCX+PCW/2, y+(RH-3)/2+5, "middle", 14, has ? "#f0f6fc" : "#6e7681", 700, price);
+
+        if (isBA) svg += t(PCX+PCW/2, y+44, "middle", 11, "#f85149", 700, "BEST ASK");
+        if (isBB) svg += t(PCX+PCW/2, y+44, "middle", 11, "#3fb950", 700, "BEST BID");
+
+        // Bid qty column
+        const bidTotal = bidLv ? bidLv.orders.reduce((sum, ord) => sum + ord.qty, 0) : 0;
+        let bqBg = "#0d1117";
+        if (bidLv) bqBg = isBB ? "#132215" : "#111a14";
+        svg += `<rect x="${BQX}" y="${y}" width="${QCW}" height="${RH-3}" rx="4" fill="${bqBg}" stroke="#30363d" stroke-width="0.5"/>`;
+        if (bidTotal > 0) svg += t(BQX+QCW/2, y+(RH-3)/2+5, "middle", 14, "#3fb950", 700, bidTotal);
+
+        // Ask qty column
+        const askTotal = askLv ? askLv.orders.reduce((sum, ord) => sum + ord.qty, 0) : 0;
+        let aqBg = "#0d1117";
+        if (askLv) aqBg = isBA ? "#201520" : "#171118";
+        svg += `<rect x="${AQX}" y="${y}" width="${QCW}" height="${RH-3}" rx="4" fill="${aqBg}" stroke="#30363d" stroke-width="0.5"/>`;
+        if (askTotal > 0) svg += t(AQX+QCW/2, y+(RH-3)/2+5, "middle", 14, "#da3633", 700, askTotal);
+
+        // Ask orders: left to right from qty column
+        if (askLv) {
+            let ox = AQX + QCW + 8;
+            askLv.orders.forEach((order, j) => {
+                const bw = drawOrder(ox, y + (RH-3-BH)/2, order, "ask", j);
+                ox += bw + BG;
+            });
+        }
+
+        // Bid orders: right to left from qty column
+        if (bidLv) {
+            let ox = BQX - 8;
+            bidLv.orders.forEach((order, j) => {
+                const bw = drawOrder(ox, y + (RH-3-BH)/2, order, "bid", j);
+                ox -= bw + BG;
+            });
+        }
+
+        // Spread gap
+        if (isBA && bestBid) {
+            const spreadVal = (parseFloat(bestAsk) - parseFloat(bestBid)).toFixed(2);
+            const sy = y + RH - 2;
+            let spreadColor = s.spreadChange ? "#ffb347" : "#8bb8e8";
+            svg += t(PCX+PCW/2, sy+12, "middle", 12, spreadColor, 600, "spread "+spreadVal);
+        }
+    });
+
+    // Incoming order indicator
+    if (s.incoming) {
+        const { side, qty } = s.incoming;
+        const tp = s.incoming.atPrice || (side === "buy" ? bestAsk : bestBid);
+        const ti = P.indexOf(tp);
+        const cy = Y0 + ti * RH + (RH-3)/2;
+
+        if (side === "buy") {
+            const ax = W - 12;
+            svg += `<rect x="${ax-82}" y="${cy-15}" width="76" height="30" rx="5" fill="#0a4025" stroke="#3fb950" stroke-width="1.5"/>`;
+            svg += t(ax-44, cy-2, "middle", 11, "#7ee8a8", 700, "BUY");
+            svg += t(ax-44, cy+11, "middle", 14, "#fff", 700, qty);
+            svg += `<polygon points="${ax-86},${cy} ${ax-93},${cy-5} ${ax-93},${cy+5}" fill="#3fb950">`
+                 + `<animate attributeName="opacity" values="1;0.3;1" dur="0.8s" repeatCount="indefinite"/>`
+                 + `</polygon>`;
+        } else {
+            const ax = 12;
+            svg += `<rect x="${ax+6}" y="${cy-15}" width="76" height="30" rx="5" fill="#4d1525" stroke="#da3633" stroke-width="1.5"/>`;
+            svg += t(ax+44, cy-2, "middle", 11, "#ff8888", 700, "SELL");
+            svg += t(ax+44, cy+11, "middle", 14, "#fff", 700, qty);
+            svg += `<polygon points="${ax+86},${cy} ${ax+93},${cy-5} ${ax+93},${cy+5}" fill="#da3633">`
+                 + `<animate attributeName="opacity" values="1;0.3;1" dur="0.8s" repeatCount="indefinite"/>`
+                 + `</polygon>`;
+        }
+    }
+
+    // Trade badge
+    if (s.trade) {
+        const label = `TRADE: ${s.trade.qty} @ ${s.trade.price}`;
+        const tw = label.length * 7.5 + 24;
+        svg += `<rect x="${W/2-tw/2}" y="${H-28}" width="${tw}" height="22" rx="4" fill="#2d1f00" stroke="#ffc107" stroke-width="1"/>`;
+        svg += t(W/2, H-13, "middle", 12, "#ffc107", 600, label);
+    }
+
+    svg += `</svg>`;
+    document.getElementById("svg-container").innerHTML = svg;
+    document.getElementById("event-title").textContent = s.title;
+    document.getElementById("event-desc").textContent = s.subtitle;
+}
+
+// ===== NAVIGATION =====
+let cur = 0;
+let revealed = 0;
+
+function showPoints() {
+    document.querySelectorAll(".concept-point").forEach((el, i) => el.classList.toggle("shown", i < revealed));
+}
+
+function go(d) {
+    const pts = slides[cur].points;
+    if (pts) {
+        if (d > 0 && revealed < pts.length) { revealed++; showPoints(); updateUI(); return; }
+        if (d < 0 && revealed > 0) { revealed--; showPoints(); updateUI(); return; }
+    }
+    const next = cur + d;
+    if (next < 0 || next >= slides.length) return;
+    const c = document.getElementById("svg-container");
+    c.style.opacity = "0";
+    setTimeout(() => {
+        cur = next;
+        revealed = d > 0 ? 0 : (slides[cur].points || []).length;
+        render(slides[cur]);
+        updateUI();
+        c.style.opacity = "1";
+    }, 200);
+}
+
+function jumpTo(i) {
+    if (i === cur) return;
+    const c = document.getElementById("svg-container");
+    c.style.opacity = "0";
+    setTimeout(() => {
+        cur = i;
+        revealed = 0;
+        render(slides[cur]);
+        updateUI();
+        c.style.opacity = "1";
+    }, 200);
+}
+
+function updateUI() {
+    document.getElementById("btnPrev").disabled = cur === 0;
+    const pending = (slides[cur].points || []).length > revealed;
+    document.getElementById("btnNext").disabled = cur === slides.length - 1 && !pending;
+    document.getElementById("counter").textContent = `${cur+1} / ${slides.length}`;
+    document.querySelectorAll(".dot").forEach((d, i) => d.classList.toggle("active", i === cur));
+}
+
+// ===== INIT =====
+const dotsEl = document.getElementById("dots");
+slides.forEach((_, i) => {
+    const d = document.createElement("div");
+    d.className = "dot" + (i === 0 ? " active" : "");
+    d.onclick = () => jumpTo(i);
+    dotsEl.appendChild(d);
+});
+
+document.addEventListener("keydown", e => {
+    if (e.key === "ArrowLeft") go(-1);
+    if (e.key === "ArrowRight") go(1);
+});
+
+fillTape();
+render(slides[0]);
+updateUI();
+</script>
+</body>
+</html>
